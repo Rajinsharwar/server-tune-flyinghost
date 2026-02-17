@@ -102,9 +102,10 @@ exec_in_container() {
   
   local payload=$(jq -n \
     --arg cmd "$command" \
+    --argjson wait "$([[ "$wait_for_websocket" == "true" ]] && echo true || echo false)" \
     '{
       "command": ["/bin/bash", "-c", $cmd],
-      "wait-for-websocket": ($wait_for_websocket == "true"),
+      "wait-for-websocket": $wait,
       "record-output": true,
       "interactive": false,
       "environment": {}
@@ -213,6 +214,15 @@ if [[ -f "redis/redis.conf" ]]; then
 fi
 
 # Copy nginx configs
+if [[ -f "nginx/nginx.conf" ]]; then
+  copy_to_container "nginx/nginx.conf" "/etc/nginx/nginx.conf"
+fi
+if [[ -f "nginx/mime.types" ]]; then
+  copy_to_container "nginx/mime.types" "/etc/nginx/mime.types"
+fi
+if [[ -f "nginx/fastcgi_params" ]]; then
+  copy_to_container "nginx/fastcgi_params" "/etc/nginx/fastcgi_params"
+fi
 if [[ -f "nginx/wordpress.conf" ]]; then
   copy_to_container "nginx/wordpress.conf" "/etc/nginx/sites-available/wordpress.conf"
 fi
@@ -250,7 +260,7 @@ exec_in_container "systemctl start nginx mariadb redis-server"
 
 # Secure MariaDB
 log_info "Securing MariaDB..."
-exec_in_container "mysql --protocol=socket <<'EOF'
+exec_in_container "mysql --protocol=socket <<'EOSQL'
 DROP USER IF EXISTS ''@'localhost';
 DROP USER IF EXISTS ''@'%';
 DROP USER IF EXISTS 'root'@'%';
@@ -260,7 +270,8 @@ CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED VIA unix_socket;
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
 DROP DATABASE IF EXISTS test;
 FLUSH PRIVILEGES;
-EOF"
+EOSQL
+"
 
 # Install PHP versions
 log_info "Installing PHP 8.3, 8.4, 8.5..."
@@ -274,21 +285,24 @@ exec_in_container "update-alternatives --set php-fpm.sock /run/php/php8.3-fpm.so
 log_info "Configuring PHP..."
 exec_in_container "mkdir -p /var/log/php && chown www-data:www-data /var/log/php && chmod 755 /var/log/php"
 
-PHP_CONFIG='max_input_vars=3000
+exec_in_container "cat > /tmp/php_config.txt <<'EOPHP'
+max_input_vars=3000
 max_execution_time=120
 memory_limit=512M
 max_input_time=120
 upload_max_filesize=64M
 post_max_size=64M
 log_errors=On
-error_log=/var/log/php/error.log'
+error_log=/var/log/php/error.log
+EOPHP
+"
 
 exec_in_container "for ver in 8.3 8.4 8.5; do
   for s in max_input_vars max_execution_time memory_limit max_input_time upload_max_filesize post_max_size log_errors error_log; do
     sed -i \"/^\$s=/d\" /etc/php/\$ver/fpm/php.ini
   done
-  echo '$PHP_CONFIG' >> /etc/php/\$ver/fpm/php.ini
-done"
+  cat /tmp/php_config.txt >> /etc/php/\$ver/fpm/php.ini
+done && rm /tmp/php_config.txt"
 
 # Install WP-CLI and WordPress
 log_info "Installing WP-CLI and WordPress..."
@@ -316,7 +330,7 @@ exec_in_container "truncate -s 0 /etc/legal"
 
 # Log rotation
 log_info "Configuring log rotation..."
-exec_in_container "cat > /etc/logrotate.d/flyinghost-logs <<'EOF'
+exec_in_container "cat > /etc/logrotate.d/flyinghost-logs <<'EOLOG'
 /var/log/nginx/*.log /var/log/php/*.log {
   size 500k
   rotate 1
@@ -327,7 +341,8 @@ exec_in_container "cat > /etc/logrotate.d/flyinghost-logs <<'EOF'
   copytruncate
   create 0640 www-data www-data
 }
-EOF"
+EOLOG
+"
 
 # Install PHPMyAdmin
 log_info "Installing PHPMyAdmin..."
@@ -344,11 +359,12 @@ exec_in_container "nginx -t && systemctl reload nginx"
 
 # Configure cloud-init
 log_info "Configuring cloud-init..."
-exec_in_container "cat > /etc/cloud/cloud.cfg.d/99-bootstrap.cfg <<'EOF'
+exec_in_container "cat > /etc/cloud/cloud.cfg.d/99-bootstrap.cfg <<'EOCLOUD'
 #cloud-config
 runcmd:
   - [bash, -lc, \"/usr/local/sbin/bootstrap.sh >> /var/log/bootstrap.log 2>&1\"]
-EOF"
+EOCLOUD
+"
 
 exec_in_container "cloud-init clean --logs"
 exec_in_container "rm -rf /var/lib/cloud/*"
@@ -362,7 +378,18 @@ OPERATION_ID=$(echo "$RESPONSE" | jq -r '.operation' | sed 's|/1.0/operations/||
 
 wait_for_operation "$OPERATION_ID" 60
 
-# Step 6: Create image from container
+# Step 6: Delete existing image with the same alias if it exists
+log_info "Checking for existing image with alias: ${IMAGE_NAME}..."
+EXISTING_IMAGE=$(lxd_api_call GET "/images/aliases/${IMAGE_NAME}" 2>/dev/null || echo "")
+
+if echo "$EXISTING_IMAGE" | jq -e '.metadata.target' >/dev/null 2>&1; then
+  log_info "Found existing image, deleting it..."
+  IMAGE_FINGERPRINT=$(echo "$EXISTING_IMAGE" | jq -r '.metadata.target')
+  lxd_api_call DELETE "/images/${IMAGE_FINGERPRINT}"
+  sleep 2
+fi
+
+# Step 7: Create image from container
 log_info "Creating image from container..."
 
 PUBLISH_PAYLOAD=$(jq -n \
@@ -398,7 +425,7 @@ wait_for_operation "$OPERATION_ID" 300
 
 log_info "Image created successfully with alias: ${IMAGE_NAME}"
 
-# Step 7: Delete temporary container
+# Step 8: Delete temporary container
 log_info "Deleting temporary container..."
 
 RESPONSE=$(lxd_api_call DELETE "/instances/${CONTAINER_NAME}")
