@@ -1,0 +1,23 @@
+# Secrets and certificates
+.secrets/
+*.pfx
+*.p12
+*.pem
+*.key
+!ssl/*.key
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+/tmp/
+*.tmp
+*.log
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
