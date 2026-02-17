@@ -270,7 +270,7 @@ log_info "Running system setup..."
 exec_in_container "apt update && DEBIAN_FRONTEND=noninteractive apt -y upgrade"
 
 # Install base packages
-exec_in_container "apt install -y --no-install-recommends \
+exec_in_container "DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
   ca-certificates apt-transport-https imagemagick mariadb-client \
   software-properties-common curl wget unzip zip gnupg lsb-release \
   ufw mariadb-server unattended-upgrades vim nginx redis-server"
@@ -302,7 +302,7 @@ exec_in_container "add-apt-repository -y ppa:ondrej/php"
 exec_in_container "apt update"
 
 # Install PHP 8.3, 8.4, and 8.5 with common extensions
-exec_in_container "apt install -y \
+exec_in_container "DEBIAN_FRONTEND=noninteractive apt install -y \
   php8.3-fpm php8.3-redis php8.3-cli php8.3-common php8.3-mysql \
   php8.3-curl php8.3-gd php8.3-intl php8.3-mbstring php8.3-imagick \
   php8.3-soap php8.3-xml php8.3-zip php8.3-opcache php8.3-imap \
@@ -385,7 +385,7 @@ log_info "Installing PHPMyAdmin..."
 exec_in_container "echo 'phpmyadmin phpmyadmin/internal/skip-preseed boolean true' | debconf-set-selections"
 exec_in_container "echo 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect' | debconf-set-selections"
 exec_in_container "echo 'phpmyadmin phpmyadmin/dbconfig-install boolean false' | debconf-set-selections"
-exec_in_container "apt install -y phpmyadmin"
+exec_in_container "DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin"
 
 # Enable WordPress nginx config
 log_info "Configuring nginx..."
