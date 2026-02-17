@@ -164,6 +164,22 @@ copy_to_container() {
 # Step 1: Create container from Ubuntu 24.04 image
 log_info "Creating container from Ubuntu 24.04..."
 
+log_info "Selecting cluster member from 'production' group..."
+
+MEMBERS_JSON=$(lxd_api_call GET "/cluster/members")
+
+TARGET_MEMBER=$(echo "$MEMBERS_JSON" | jq -r '
+  .metadata[] |
+  select(.groups[]? == "production") |
+  .server_name' | head -n1)
+
+if [[ -z "$TARGET_MEMBER" ]]; then
+  log_error "No cluster member found in 'production' group"
+  exit 1
+fi
+
+log_info "Selected cluster member: $TARGET_MEMBER"
+
 CREATE_PAYLOAD=$(jq -n \
   --arg name "$CONTAINER_NAME" \
   '{
@@ -177,7 +193,7 @@ CREATE_PAYLOAD=$(jq -n \
     "type": "container"
   }')
 
-RESPONSE=$(lxd_api_call POST "/instances" "$CREATE_PAYLOAD")
+RESPONSE=$(lxd_api_call POST "/instances?target=${TARGET_MEMBER}" "$CREATE_PAYLOAD")
 OPERATION_ID=$(echo "$RESPONSE" | jq -r '.operation' | sed 's|/1.0/operations/||')
 
 if [[ -z "$OPERATION_ID" || "$OPERATION_ID" == "null" ]]; then
