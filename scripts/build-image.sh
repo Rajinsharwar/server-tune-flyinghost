@@ -129,7 +129,20 @@ exec_in_container() {
   
   if [[ "$return_code" != "0" ]]; then
     log_error "Command failed with exit code: $return_code"
-    echo "$output" | jq '.metadata.metadata'
+
+    STDERR_PATH=$(echo "$output" | jq -r '.metadata.metadata.output["2"]')
+    STDOUT_PATH=$(echo "$output" | jq -r '.metadata.metadata.output["1"]')
+
+    if [[ -n "$STDERR_PATH" && "$STDERR_PATH" != "null" ]]; then
+      log_error "===== STDERR ====="
+      lxd_api_call GET "$STDERR_PATH"
+    fi
+
+    if [[ -n "$STDOUT_PATH" && "$STDOUT_PATH" != "null" ]]; then
+      log_info "===== STDOUT ====="
+      lxd_api_call GET "$STDOUT_PATH"
+    fi
+
     return 1
   fi
   
@@ -270,48 +283,10 @@ log_info "Running system setup..."
 exec_in_container "apt update && DEBIAN_FRONTEND=noninteractive apt -y upgrade"
 
 # Install base packages
-exec_in_container "
-set -e
-
-export DEBIAN_FRONTEND=noninteractive
-
-# Prevent services from auto-starting during image build
-printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
-chmod +x /usr/sbin/policy-rc.d
-
-# Pre-seed common packages to avoid prompts
-echo 'mariadb-server mariadb-server/root_password password' | debconf-set-selections
-echo 'mariadb-server mariadb-server/root_password_again password' | debconf-set-selections
-echo 'ufw ufw/enable boolean false' | debconf-set-selections
-
-# Update package lists
-apt-get update -y
-
-# Install base packages
-apt-get install -y --no-install-recommends \
-  ca-certificates \
-  imagemagick \
-  mariadb-client \
-  mariadb-server \
-  software-properties-common \
-  curl \
-  wget \
-  unzip \
-  zip \
-  gnupg \
-  lsb-release \
-  unattended-upgrades \
-  vim \
-  nginx \
-  redis-server
-
-# Clean apt cache to reduce image size
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-
-# Re-enable service management
-rm -f /usr/sbin/policy-rc.d
-"
+exec_in_container "apt install -y --no-install-recommends \
+  ca-certificates apt-transport-https imagemagick mariadb-client \
+  software-properties-common curl wget unzip zip gnupg lsb-release \
+  ufw mariadb-server unattended-upgrades vim nginx redis-server"
 
 exec_in_container "dpkg-reconfigure -f noninteractive unattended-upgrades"
 
