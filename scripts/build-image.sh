@@ -170,7 +170,9 @@ CREATE_PAYLOAD=$(jq -n \
     "name": $name,
     "source": {
       "type": "image",
-      "alias": "24.04"
+      "server": "https://images.linuxcontainers.org",
+      "protocol": "simplestreams",
+      "alias": "ubuntu/24.04"
     },
     "type": "container"
   }')
