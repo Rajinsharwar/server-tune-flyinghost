@@ -166,7 +166,7 @@ log_info "Creating container from Ubuntu 24.04..."
 
 log_info "Selecting cluster member from 'production' group..."
 
-MEMBERS_JSON=$(lxd_api_call GET "/cluster/members")
+MEMBERS_JSON=$(lxd_api_call GET "/cluster/members?recursion=1")
 
 TARGET_MEMBER=$(echo "$MEMBERS_JSON" | jq -r '
   .metadata[] |
