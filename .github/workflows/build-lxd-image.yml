@@ -61,7 +61,12 @@ jobs:
           echo "Setting up LXD remote connection to $LXD_HOST"
           
           # Install LXD client if not present
-          sudo snap install lxd --channel=latest/stable || true
+          if ! command -v lxc >/dev/null 2>&1; then
+            echo "Installing LXD client..."
+            sudo snap install lxd --channel=latest/stable
+          else
+            echo "LXD client already installed"
+          fi
           
           # Add remote with trust token
           lxc remote add flyinghost "https://$LXD_HOST:8443" --auth-type=tls --accept-certificate <<EOF
@@ -71,8 +76,11 @@ jobs:
           # Set as default remote
           lxc remote switch flyinghost
           
-          # Verify connection
-          lxc list || echo "Warning: Could not list containers, but remote is configured"
+          # Verify connection (with detailed error reporting)
+          if ! lxc list; then
+            echo "Warning: Could not list containers. This may be due to permissions or network issues."
+            echo "However, the remote has been configured. The build script may still work."
+          fi
           
           echo "LXD remote configured successfully"
       

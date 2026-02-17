@@ -45,7 +45,7 @@ Trust token for LXD authentication.
 
 To generate on your LXD server:
 ```bash
-ssh root@65.109.28.250
+ssh root@YOUR_LXD_HOST
 lxc config trust add github-actions
 # Copy the token that is displayed
 ```
