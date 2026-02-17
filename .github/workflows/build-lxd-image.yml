@@ -1,0 +1,58 @@
+name: Build LXD Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '--release=')
+    
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Extract image name from commit message
+        id: extract
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          # Extract image name from --release=imagename
+          if [[ "$COMMIT_MSG" =~ --release=([a-zA-Z0-9._-]+) ]]; then
+            IMAGE_NAME="${BASH_REMATCH[1]}"
+            echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+            echo "Found image name: $IMAGE_NAME"
+          else
+            echo "Error: --release flag found but could not extract image name"
+            exit 1
+          fi
+          
+      - name: Decode LXD certificate
+        run: |
+          echo "${{ secrets.LXD_CERT_FILE }}" | base64 -d > /tmp/lxd.pfx
+          
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+          
+      - name: Build and publish LXD image
+        env:
+          LXD_HOST: ${{ secrets.LXD_HOST }}
+          LXD_CERT_FILE: /tmp/lxd.pfx
+          LXD_CERT_PASS: ${{ secrets.LXD_CERT_PASS }}
+          HOST_SSH_KEY_BASE64: ${{ secrets.HOST_SSH_KEY_BASE64 }}
+          IMAGE_NAME: ${{ steps.extract.outputs.image_name }}
+        run: |
+          chmod +x scripts/build-image.sh
+          ./scripts/build-image.sh
+          
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/lxd.pfx

@@ -2,6 +2,43 @@
 
 WordPress server setup and optimization for Ubuntu 24.04 LTS.
 
+## Automated Image Creation
+
+This repository includes automated LXD image creation via GitHub Actions. When you commit changes with a special flag in the commit message, a new LXD image will be automatically built and published.
+
+### Setup
+
+1. Add the following secrets to your GitHub repository (Settings → Secrets and variables → Actions):
+   - `LXD_HOST`: Your LXD server IP address (e.g., `65.109.28.250`)
+   - `LXD_CERT_FILE`: Base64-encoded PFX certificate file for LXD authentication
+   - `LXD_CERT_PASS`: Password for the PFX certificate
+   - `HOST_SSH_KEY_BASE64`: (Optional) Base64-encoded SSH private key for host access
+
+2. To encode your PFX certificate:
+   ```bash
+   base64 -w 0 /path/to/lxd.pfx
+   ```
+
+### Usage
+
+To trigger automated image creation, include `--release=<image-name>` in your commit message:
+
+```bash
+git add .
+git commit -m "Updated nginx config --release=imagev3"
+git push
+```
+
+This will:
+1. Trigger the GitHub Actions workflow
+2. Create a temporary LXD container from Ubuntu 24.04
+3. Copy all configuration files from this repository
+4. Run all setup commands from the "Container" section below
+5. Publish the container as an LXD image with alias `imagev3`
+6. Clean up the temporary container
+
+The image will be available in your LXD server and can be used to launch new containers.
+
 ## Host
 
 ### CPU Governor
