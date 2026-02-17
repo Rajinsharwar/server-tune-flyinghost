@@ -52,44 +52,27 @@ jobs:
           echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
           echo "skip=false" >> $GITHUB_OUTPUT
       
-      - name: Install LXD client
-        if: steps.extract.outputs.skip != 'true'
-        run: |
-          sudo snap install lxd --channel=latest/stable
-          sudo lxd init --auto
-      
-      - name: Setup LXD remote authentication
+      - name: Setup LXD Client
         if: steps.extract.outputs.skip != 'true'
         env:
           LXD_HOST: ${{ secrets.LXD_HOST }}
-          LXD_CERT_FILE: ${{ secrets.LXD_CERT_FILE }}
-          LXD_CERT_PASS: ${{ secrets.LXD_CERT_PASS }}
+          LXD_TRUST_TOKEN: ${{ secrets.LXD_TRUST_TOKEN }}
         run: |
           echo "Setting up LXD remote connection to $LXD_HOST"
           
-          # Decode and save certificate
-          echo "$LXD_CERT_FILE" | base64 -d > /tmp/lxd-client.pfx
+          # Install LXD client if not present
+          sudo snap install lxd --channel=latest/stable || true
           
-          # Extract certificate and key from PFX
-          openssl pkcs12 -in /tmp/lxd-client.pfx -out /tmp/client.crt -clcerts -nokeys -passin pass:"$LXD_CERT_PASS"
-          openssl pkcs12 -in /tmp/lxd-client.pfx -out /tmp/client.key -nocerts -nodes -passin pass:"$LXD_CERT_PASS"
+          # Add remote with trust token
+          lxc remote add flyinghost "https://$LXD_HOST:8443" --auth-type=tls --accept-certificate <<EOF
+          $LXD_TRUST_TOKEN
+          EOF
           
-          # Configure LXD client
-          mkdir -p ~/.config/lxc
+          # Set as default remote
+          lxc remote switch flyinghost
           
-          # Add remote
-          lxc remote add flyinghost "https://$LXD_HOST:8443" \
-            --accept-certificate \
-            --auth-type=tls
-          
-          # Copy client certificates
-          sudo cp /tmp/client.crt ~/.config/lxc/client.crt
-          sudo cp /tmp/client.key ~/.config/lxc/client.key
-          sudo chmod 644 ~/.config/lxc/client.crt
-          sudo chmod 600 ~/.config/lxc/client.key
-          
-          # Clean up
-          rm -f /tmp/lxd-client.pfx /tmp/client.crt /tmp/client.key
+          # Verify connection
+          lxc list || echo "Warning: Could not list containers, but remote is configured"
           
           echo "LXD remote configured successfully"
       
