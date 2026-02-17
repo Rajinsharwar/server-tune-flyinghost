@@ -228,54 +228,6 @@ wait_for_operation "$OPERATION_ID"
 # Wait for container to be fully ready
 sleep 10
 
-# Step 3: Copy configuration files to container
-log_info "Copying configuration files..."
-
-# Copy MariaDB config files if they exist
-if [[ -d "mariadb.conf.d" ]]; then
-  for conf_file in mariadb.conf.d/*; do
-    if [[ -f "$conf_file" ]]; then
-      copy_to_container "$conf_file" "/etc/mysql/mariadb.conf.d/$(basename "$conf_file")"
-    fi
-  done
-fi
-
-# Copy Redis config if it exists
-if [[ -f "redis/redis.conf" ]]; then
-  copy_to_container "redis/redis.conf" "/etc/redis/redis.conf"
-fi
-
-# Copy nginx configs
-if [[ -f "nginx/nginx.conf" ]]; then
-  copy_to_container "nginx/nginx.conf" "/etc/nginx/nginx.conf"
-fi
-if [[ -f "nginx/mime.types" ]]; then
-  copy_to_container "nginx/mime.types" "/etc/nginx/mime.types"
-fi
-if [[ -f "nginx/fastcgi_params" ]]; then
-  copy_to_container "nginx/fastcgi_params" "/etc/nginx/fastcgi_params"
-fi
-if [[ -f "nginx/wordpress.conf" ]]; then
-  copy_to_container "nginx/wordpress.conf" "/etc/nginx/sites-available/wordpress.conf"
-fi
-
-# Copy bootstrap script
-if [[ -f "bootstrap.sh" ]]; then
-  copy_to_container "bootstrap.sh" "/usr/local/sbin/bootstrap.sh"
-  exec_in_container "chmod 750 /usr/local/sbin/bootstrap.sh" false
-fi
-
-# Copy phpMyAdmin configs if they exist
-if [[ -f "phpmyadmin/signon.php" ]]; then
-  copy_to_container "phpmyadmin/signon.php" "/usr/share/phpmyadmin/signon.php"
-fi
-if [[ -f "phpmyadmin/logout.php" ]]; then
-  copy_to_container "phpmyadmin/logout.php" "/usr/share/phpmyadmin/logout.php"
-fi
-if [[ -f "phpmyadmin/config.inc.php" ]]; then
-  copy_to_container "phpmyadmin/config.inc.php" "/etc/phpmyadmin/config.inc.php"
-fi
-
 # Step 4: Run setup commands from README
 log_info "Running system setup..."
 
@@ -399,6 +351,54 @@ exec_in_container "echo 'phpmyadmin phpmyadmin/internal/skip-preseed boolean tru
 exec_in_container "echo 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect' | debconf-set-selections"
 exec_in_container "echo 'phpmyadmin phpmyadmin/dbconfig-install boolean false' | debconf-set-selections"
 exec_in_container "apt install -y phpmyadmin"
+
+# Step 3: Copy configuration files to container
+log_info "Copying configuration files..."
+
+# Copy MariaDB config files if they exist
+if [[ -d "mariadb.conf.d" ]]; then
+  for conf_file in mariadb.conf.d/*; do
+    if [[ -f "$conf_file" ]]; then
+      copy_to_container "$conf_file" "/etc/mysql/mariadb.conf.d/$(basename "$conf_file")"
+    fi
+  done
+fi
+
+# Copy Redis config if it exists
+if [[ -f "redis/redis.conf" ]]; then
+  copy_to_container "redis/redis.conf" "/etc/redis/redis.conf"
+fi
+
+# Copy nginx configs
+if [[ -f "nginx/nginx.conf" ]]; then
+  copy_to_container "nginx/nginx.conf" "/etc/nginx/nginx.conf"
+fi
+if [[ -f "nginx/mime.types" ]]; then
+  copy_to_container "nginx/mime.types" "/etc/nginx/mime.types"
+fi
+if [[ -f "nginx/fastcgi_params" ]]; then
+  copy_to_container "nginx/fastcgi_params" "/etc/nginx/fastcgi_params"
+fi
+if [[ -f "nginx/wordpress.conf" ]]; then
+  copy_to_container "nginx/wordpress.conf" "/etc/nginx/sites-available/wordpress.conf"
+fi
+
+# Copy bootstrap script
+if [[ -f "bootstrap.sh" ]]; then
+  copy_to_container "bootstrap.sh" "/usr/local/sbin/bootstrap.sh"
+  exec_in_container "chmod 750 /usr/local/sbin/bootstrap.sh" false
+fi
+
+# Copy phpMyAdmin configs if they exist
+if [[ -f "phpmyadmin/signon.php" ]]; then
+  copy_to_container "phpmyadmin/signon.php" "/usr/share/phpmyadmin/signon.php"
+fi
+if [[ -f "phpmyadmin/logout.php" ]]; then
+  copy_to_container "phpmyadmin/logout.php" "/usr/share/phpmyadmin/logout.php"
+fi
+if [[ -f "phpmyadmin/config.inc.php" ]]; then
+  copy_to_container "phpmyadmin/config.inc.php" "/etc/phpmyadmin/config.inc.php"
+fi
 
 # Enable WordPress nginx config
 log_info "Configuring nginx..."
