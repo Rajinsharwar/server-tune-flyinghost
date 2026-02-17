@@ -107,7 +107,6 @@ exec_in_container() {
     --argjson wait "$([[ "$wait_for_websocket" == "true" ]] && echo true || echo false)" \
     '{
       "command": ["/bin/bash", "-c", $cmd],
-      "wait-for-websocket": $wait,
       "record-output": true,
       "interactive": false,
       "environment": {}
