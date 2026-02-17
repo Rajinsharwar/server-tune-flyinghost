@@ -2,6 +2,77 @@
 
 WordPress server setup and optimization for Ubuntu 24.04 LTS.
 
+## Automated LXD Image Creation
+
+This repository includes a GitHub Actions workflow that automates the creation of LXD container images. The workflow executes all setup commands from the Container section and publishes a ready-to-use LXD image.
+
+### Usage
+
+To trigger an automated image build, include `--release=<image-name>` in your commit message:
+
+```bash
+git commit -m "Update nginx config --release=imagev3"
+git push
+```
+
+The workflow will:
+1. Create a temporary Ubuntu 24.04 LTS container on your LXD host
+2. Install and configure all required packages (MariaDB, Nginx, Redis, PHP 8.3/8.4/8.5, etc.)
+3. Set up WordPress, WP-CLI, and plugins
+4. Copy all configuration files from the repository
+5. Create an LXD image with the specified name/alias
+6. Clean up the temporary container
+
+### Manual Trigger
+
+You can also trigger the workflow manually from the GitHub Actions tab:
+1. Go to Actions → Build LXD Image
+2. Click "Run workflow"
+3. Enter the desired image name
+4. Click "Run workflow"
+
+### Required GitHub Secrets
+
+Navigate to repository **Settings → Secrets and variables → Actions**, and add the following secrets:
+
+#### 1. `LXD_HOST`
+Your LXD server IP address or hostname.
+
+**Example:** `65.109.28.250`
+
+#### 2. `LXD_CERT_FILE`
+Base64-encoded LXD client certificate (.pfx file).
+
+To generate:
+```bash
+cat lxd-client.pfx | base64 -w 0
+```
+
+#### 3. `LXD_CERT_PASS`
+Password for the LXD certificate.
+
+#### 4. `HOST_SSH_KEY_BASE64`
+Base64-encoded SSH private key for accessing the LXD host (if needed for additional operations).
+
+To generate:
+```bash
+cat ~/.ssh/id_rsa | base64 -w 0
+```
+
+### Image Name Requirements
+
+- Only alphanumeric characters, hyphens (-), and underscores (_) are allowed
+- No spaces or special characters
+- Examples: `imagev3`, `wordpress-v1`, `ubuntu_wp_2024`
+
+### Workflow Details
+
+- **Timeout:** 60 minutes maximum
+- **Base Image:** Ubuntu 24.04 LTS
+- **Trigger:** Commit messages containing `--release=` or manual workflow dispatch
+- **Logs:** All operations are logged for debugging
+- **Error Handling:** Automatic cleanup on failure
+
 ## Host
 
 ### CPU Governor
