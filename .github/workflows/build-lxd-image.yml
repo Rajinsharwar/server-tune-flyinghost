@@ -65,6 +65,7 @@ jobs:
           echo "$LXD_CERT_FILE" | base64 -d > /tmp/lxd-client.pfx
           
           # Test connection with REST API
+          # Note: Using -k flag because LXD typically uses self-signed certificates
           curl -k --cert-type P12 --cert /tmp/lxd-client.pfx:"$LXD_CERT_PASS" \
             "https://$LXD_HOST:8443/1.0" | jq .
           

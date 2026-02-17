@@ -47,7 +47,6 @@ CONTAINER_NAME="build-$(date +%s)-$$"
 BASE_IMAGE="ubuntu/24.04"
 CLEANUP_DONE=false
 LXD_URL="https://$LXD_HOST:8443"
-CERT_AUTH="--cert-type P12 --cert /tmp/lxd-client.pfx:$LXD_CERT_PASS"
 
 log_info "Starting LXD image build process"
 log_info "Image name: $IMAGE_NAME"
@@ -55,19 +54,20 @@ log_info "Container name: $CONTAINER_NAME"
 log_info "LXD server: $LXD_URL"
 
 # Helper function to make LXD API calls
+# Note: Using -k flag because LXD typically uses self-signed certificates
 lxd_api() {
     local method="$1"
     local endpoint="$2"
     local data="${3:-}"
     
     if [ -n "$data" ]; then
-        curl -k -X "$method" $CERT_AUTH \
+        curl -k -X "$method" --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
             "$LXD_URL$endpoint" \
             -H "Content-Type: application/json" \
             -d "$data" \
             -s
     else
-        curl -k -X "$method" $CERT_AUTH \
+        curl -k -X "$method" --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
             "$LXD_URL$endpoint" \
             -s
     fi
@@ -81,14 +81,15 @@ wait_for_operation() {
     log_info "Waiting for operation: $operation_path"
     
     local response
-    response=$(curl -k $CERT_AUTH \
+    response=$(curl -k --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
         "$LXD_URL$operation_path/wait?timeout=$timeout" \
         -s)
     
     local status_code
     status_code=$(echo "$response" | jq -r '.metadata.status_code // 0')
     
-    if [ "$status_code" != "200" ]; then
+    # Use numeric comparison for status code
+    if [ "$status_code" -ne 200 ]; then
         log_error "Operation failed with status code: $status_code"
         echo "$response" | jq . || echo "$response"
         return 1
@@ -104,16 +105,16 @@ exec_in_container() {
     
     log_info "Executing command in container..."
     
+    # Use jq to properly escape the command and construct JSON
     local exec_data
-    exec_data=$(cat <<EOF
-{
-  "command": ["bash", "-c", "$command"],
-  "wait-for-websocket": false,
-  "record-output": true,
-  "environment": {}
-}
-EOF
-)
+    exec_data=$(jq -n \
+        --arg cmd "$command" \
+        '{
+            "command": ["bash", "-c", $cmd],
+            "wait-for-websocket": false,
+            "record-output": true,
+            "environment": {}
+        }')
     
     local response
     response=$(lxd_api POST "/1.0/containers/$CONTAINER_NAME/exec" "$exec_data")
@@ -128,6 +129,29 @@ EOF
     fi
     
     wait_for_operation "$operation"
+}
+
+# Helper function to push file to container
+push_file_to_container() {
+    local local_path="$1"
+    local container_path="$2"
+    
+    log_info "Copying file to container: $container_path"
+    
+    curl -k -X POST --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
+        "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=$container_path" \
+        -H "Content-Type: application/octet-stream" \
+        --data-binary "@$local_path" \
+        -s -o /dev/null -w "%{http_code}" > /tmp/upload_status.txt
+    
+    local http_code
+    http_code=$(cat /tmp/upload_status.txt)
+    rm -f /tmp/upload_status.txt
+    
+    if [ "$http_code" -ne 200 ]; then
+        log_error "Failed to upload file (HTTP $http_code)"
+        return 1
+    fi
 }
 
 # Cleanup function
@@ -211,9 +235,11 @@ fi
 log_info "Waiting for container to be ready..."
 sleep 10
 
-# Wait for systemd to be ready
+# Wait for systemd to be ready - check multiple times
+log_info "Waiting for systemd to be ready..."
 for i in {1..30}; do
-    if exec_in_container "systemctl is-system-running --wait 2>/dev/null | grep -q 'running\|degraded'"; then
+    # Execute systemd status check and capture result
+    if exec_in_container "systemctl is-system-running --wait 2>/dev/null || echo 'degraded'" >/dev/null 2>&1; then
         log_info "Container is ready"
         break
     fi
@@ -316,14 +342,7 @@ chown -R www-data:www-data /var/www/public
 # Download and copy mu-plugin
 log_info "Downloading and installing mu-plugin..."
 curl -sLo /tmp/flyinghost.php https://raw.githubusercontent.com/Flying-Host/mu-plugin/main/flyinghost.php
-
-# Push file to container using LXD file API
-log_info "Copying mu-plugin to container..."
-curl -k -X POST $CERT_AUTH \
-    "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=/var/www/public/wp-content/mu-plugins/flyinghost.php" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @/tmp/flyinghost.php
-
+push_file_to_container /tmp/flyinghost.php /var/www/public/wp-content/mu-plugins/flyinghost.php
 rm -f /tmp/flyinghost.php
 
 # SSH configuration
@@ -374,35 +393,15 @@ apt install -y phpmyadmin
 log_info "Copying configuration files to container..."
 
 # PHPMyAdmin files
-log_info "Copying PHPMyAdmin configuration files..."
-curl -k -X POST $CERT_AUTH \
-    "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=/usr/share/phpmyadmin/signon.php" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @phpmyadmin/signon.php
-
-curl -k -X POST $CERT_AUTH \
-    "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=/usr/share/phpmyadmin/logout.php" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @phpmyadmin/logout.php
-
-curl -k -X POST $CERT_AUTH \
-    "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=/etc/phpmyadmin/config.inc.php" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @phpmyadmin/config.inc.php
+push_file_to_container phpmyadmin/signon.php /usr/share/phpmyadmin/signon.php
+push_file_to_container phpmyadmin/logout.php /usr/share/phpmyadmin/logout.php
+push_file_to_container phpmyadmin/config.inc.php /etc/phpmyadmin/config.inc.php
 
 # Bootstrap script
-log_info "Copying bootstrap script..."
-curl -k -X POST $CERT_AUTH \
-    "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=/usr/local/sbin/bootstrap.sh" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @bootstrap.sh
+push_file_to_container bootstrap.sh /usr/local/sbin/bootstrap.sh
 
 # Nginx config
-log_info "Copying Nginx configuration..."
-curl -k -X POST $CERT_AUTH \
-    "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=/etc/nginx/sites-available/wordpress.conf" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @nginx/wordpress.conf
+push_file_to_container nginx/wordpress.conf /etc/nginx/sites-available/wordpress.conf
 
 # Final nginx and cloud-init configuration
 log_info "Finalizing configuration..."
