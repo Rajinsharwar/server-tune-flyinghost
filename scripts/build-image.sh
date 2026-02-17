@@ -134,13 +134,13 @@ exec_in_container() {
     STDOUT_PATH=$(echo "$output" | jq -r '.metadata.metadata.output["1"]')
 
     if [[ -n "$STDERR_PATH" && "$STDERR_PATH" != "null" ]]; then
-      log_error "===== STDERR ====="
-      lxd_api_call GET "$STDERR_PATH"
+      CLEAN_STDERR_PATH="${STDERR_PATH#/1.0}"
+      lxd_api_call GET "$CLEAN_STDERR_PATH"
     fi
 
     if [[ -n "$STDOUT_PATH" && "$STDOUT_PATH" != "null" ]]; then
-      log_info "===== STDOUT ====="
-      lxd_api_call GET "$STDOUT_PATH"
+      CLEAN_STDOUT_PATH="${STDOUT_PATH#/1.0}"
+      lxd_api_call GET "$CLEAN_STDOUT_PATH"
     fi
 
     return 1
