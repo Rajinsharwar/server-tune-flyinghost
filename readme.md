@@ -40,17 +40,21 @@ Your LXD server IP address or hostname.
 
 **Example:** `65.109.28.250`
 
-#### 2. `LXD_TRUST_TOKEN`
-Trust token for LXD authentication.
+#### 2. `LXD_CERT_FILE`
+Base64-encoded PFX certificate for LXD authentication.
 
-To generate on your LXD server:
+To generate:
 ```bash
-ssh root@YOUR_LXD_HOST
-lxc config trust add github-actions
-# Copy the token that is displayed
+# Encode your PFX certificate to base64
+cat lxd-client.pfx | base64 -w 0
 ```
 
-#### 3. `HOST_SSH_KEY_BASE64` (Optional)
+#### 3. `LXD_CERT_PASS`
+Password/passphrase for the PFX certificate.
+
+**Example:** `your-pfx-password`
+
+#### 4. `HOST_SSH_KEY_BASE64` (Optional)
 Base64-encoded SSH private key for accessing the LXD host (if needed for additional operations).
 
 To generate:

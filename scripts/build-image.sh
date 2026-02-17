@@ -26,15 +26,133 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+# Check required environment variables
+if [ -z "${LXD_HOST:-}" ]; then
+    log_error "LXD_HOST environment variable is required"
+    exit 1
+fi
+
+if [ -z "${LXD_CERT_PASS:-}" ]; then
+    log_error "LXD_CERT_PASS environment variable is required"
+    exit 1
+fi
+
+if [ ! -f "/tmp/lxd-client.pfx" ]; then
+    log_error "PFX certificate not found at /tmp/lxd-client.pfx"
+    exit 1
+fi
+
 IMAGE_NAME="$1"
 CONTAINER_NAME="build-$(date +%s)-$$"
-LXD_REMOTE="flyinghost"
-BASE_IMAGE="ubuntu:24.04"
+BASE_IMAGE="ubuntu/24.04"
 CLEANUP_DONE=false
+LXD_URL="https://$LXD_HOST:8443"
 
 log_info "Starting LXD image build process"
 log_info "Image name: $IMAGE_NAME"
 log_info "Container name: $CONTAINER_NAME"
+log_info "LXD server: $LXD_URL"
+
+# Helper function to make LXD API calls
+# Note: Using -k flag because LXD typically uses self-signed certificates
+lxd_api() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+    
+    if [ -n "$data" ]; then
+        curl -k -X "$method" --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
+            "$LXD_URL$endpoint" \
+            -H "Content-Type: application/json" \
+            -d "$data" \
+            -s
+    else
+        curl -k -X "$method" --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
+            "$LXD_URL$endpoint" \
+            -s
+    fi
+}
+
+# Helper function to wait for an operation to complete
+wait_for_operation() {
+    local operation_path="$1"
+    local timeout="${2:-300}"
+    
+    log_info "Waiting for operation: $operation_path"
+    
+    local response
+    response=$(curl -k --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
+        "$LXD_URL$operation_path/wait?timeout=$timeout" \
+        -s)
+    
+    local status_code
+    status_code=$(echo "$response" | jq -r '.metadata.status_code // 0')
+    
+    # Use numeric comparison for status code
+    if [ "$status_code" -ne 200 ]; then
+        log_error "Operation failed with status code: $status_code"
+        echo "$response" | jq . || echo "$response"
+        return 1
+    fi
+    
+    log_info "Operation completed successfully"
+    return 0
+}
+
+# Helper function to execute command in container
+exec_in_container() {
+    local command="$1"
+    
+    log_info "Executing command in container..."
+    
+    # Use jq to properly escape the command and construct JSON
+    local exec_data
+    exec_data=$(jq -n \
+        --arg cmd "$command" \
+        '{
+            "command": ["bash", "-c", $cmd],
+            "wait-for-websocket": false,
+            "record-output": true,
+            "environment": {}
+        }')
+    
+    local response
+    response=$(lxd_api POST "/1.0/containers/$CONTAINER_NAME/exec" "$exec_data")
+    
+    local operation
+    operation=$(echo "$response" | jq -r '.operation // empty')
+    
+    if [ -z "$operation" ]; then
+        log_error "Failed to execute command"
+        echo "$response" | jq . || echo "$response"
+        return 1
+    fi
+    
+    wait_for_operation "$operation"
+}
+
+# Helper function to push file to container
+push_file_to_container() {
+    local local_path="$1"
+    local container_path="$2"
+    
+    log_info "Copying file to container: $container_path"
+    
+    curl -k -X POST --cert-type P12 --cert "/tmp/lxd-client.pfx:$LXD_CERT_PASS" \
+        "$LXD_URL/1.0/containers/$CONTAINER_NAME/files?path=$container_path" \
+        -H "Content-Type: application/octet-stream" \
+        --data-binary "@$local_path" \
+        -s -o /dev/null -w "%{http_code}" > /tmp/upload_status.txt
+    
+    local http_code
+    http_code=$(cat /tmp/upload_status.txt)
+    rm -f /tmp/upload_status.txt
+    
+    if [ "$http_code" -ne 200 ]; then
+        log_error "Failed to upload file (HTTP $http_code)"
+        return 1
+    fi
+}
 
 # Cleanup function
 cleanup() {
@@ -44,14 +162,30 @@ cleanup() {
     
     log_warn "Performing cleanup..."
     
-    # Stop and delete container if it exists
-    if lxc info "$LXD_REMOTE:$CONTAINER_NAME" >/dev/null 2>&1; then
+    # Check if container exists
+    local check_response
+    check_response=$(lxd_api GET "/1.0/containers/$CONTAINER_NAME" 2>/dev/null || echo '{"error":"not found"}')
+    
+    if echo "$check_response" | jq -e '.metadata' >/dev/null 2>&1; then
         log_info "Stopping container $CONTAINER_NAME..."
-        lxc stop "$LXD_REMOTE:$CONTAINER_NAME" --force 2>/dev/null || true
+        
+        local stop_data='{"action":"stop","timeout":30,"force":true}'
+        lxd_api PUT "/1.0/containers/$CONTAINER_NAME/state" "$stop_data" >/dev/null 2>&1 || true
+        sleep 3
         
         log_info "Deleting container $CONTAINER_NAME..."
-        lxc delete "$LXD_REMOTE:$CONTAINER_NAME" --force 2>/dev/null || true
+        local delete_response
+        delete_response=$(lxd_api DELETE "/1.0/containers/$CONTAINER_NAME")
+        
+        local operation
+        operation=$(echo "$delete_response" | jq -r '.operation // empty')
+        if [ -n "$operation" ]; then
+            wait_for_operation "$operation" 60 || true
+        fi
     fi
+    
+    # Cleanup PFX file
+    rm -f /tmp/lxd-client.pfx
     
     CLEANUP_DONE=true
     log_info "Cleanup complete"
@@ -62,16 +196,50 @@ trap cleanup EXIT INT TERM
 
 # Create container
 log_info "Creating container from $BASE_IMAGE..."
-lxc launch "$LXD_REMOTE:$BASE_IMAGE" "$LXD_REMOTE:$CONTAINER_NAME"
 
-# Wait for container to start
-log_info "Waiting for container to start..."
-sleep 10
+CREATE_DATA=$(cat <<EOF
+{
+  "name": "$CONTAINER_NAME",
+  "source": {
+    "type": "image",
+    "alias": "$BASE_IMAGE"
+  },
+  "config": {},
+  "devices": {}
+}
+EOF
+)
+
+CREATE_RESPONSE=$(lxd_api POST "/1.0/containers" "$CREATE_DATA")
+OPERATION=$(echo "$CREATE_RESPONSE" | jq -r '.operation // empty')
+
+if [ -z "$OPERATION" ]; then
+    log_error "Failed to create container"
+    echo "$CREATE_RESPONSE" | jq . || echo "$CREATE_RESPONSE"
+    exit 1
+fi
+
+wait_for_operation "$OPERATION"
+
+# Start container
+log_info "Starting container..."
+START_DATA='{"action":"start","timeout":30}'
+START_RESPONSE=$(lxd_api PUT "/1.0/containers/$CONTAINER_NAME/state" "$START_DATA")
+OPERATION=$(echo "$START_RESPONSE" | jq -r '.operation // empty')
+
+if [ -n "$OPERATION" ]; then
+    wait_for_operation "$OPERATION"
+fi
 
 # Wait for container to be ready
-log_info "Waiting for container network..."
+log_info "Waiting for container to be ready..."
+sleep 10
+
+# Wait for systemd to be ready - check multiple times
+log_info "Waiting for systemd to be ready..."
 for i in {1..30}; do
-    if lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- systemctl is-system-running --wait 2>/dev/null | grep -q "running\|degraded"; then
+    # Execute systemd status check and capture result
+    if exec_in_container "systemctl is-system-running --wait 2>/dev/null || echo 'degraded'" >/dev/null 2>&1; then
         log_info "Container is ready"
         break
     fi
@@ -83,7 +251,7 @@ log_info "Starting container setup..."
 
 # System packages
 log_info "Installing system packages..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c '
+exec_in_container '
 set -euo pipefail
 apt update
 DEBIAN_FRONTEND=noninteractive apt -y upgrade
@@ -96,7 +264,7 @@ dpkg-reconfigure -f noninteractive unattended-upgrades
 
 # MariaDB, Nginx, Redis
 log_info "Configuring services..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c '
+exec_in_container '
 set -euo pipefail
 systemctl enable nginx mariadb redis-server
 systemctl start nginx mariadb redis-server
@@ -104,7 +272,7 @@ systemctl start nginx mariadb redis-server
 
 # MariaDB: secure root, remove test users
 log_info "Securing MariaDB..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c "
+exec_in_container "
 set -euo pipefail
 mysql --protocol=socket <<'EOF'
 DROP USER IF EXISTS ''@'localhost';
@@ -121,7 +289,7 @@ EOF
 
 # PHP 8.3, 8.4, 8.5
 log_info "Installing PHP versions..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c '
+exec_in_container '
 set -euo pipefail
 add-apt-repository -y ppa:ondrej/php
 apt update
@@ -134,7 +302,7 @@ update-alternatives --set php-fpm.sock /run/php/php8.3-fpm.sock
 
 # PHP config
 log_info "Configuring PHP..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c "
+exec_in_container "
 set -euo pipefail
 mkdir -p /var/log/php
 chown www-data:www-data /var/log/php
@@ -157,7 +325,7 @@ done
 
 # WP-CLI, WordPress core, Redis cache plugin
 log_info "Installing WP-CLI and WordPress..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c '
+exec_in_container '
 set -euo pipefail
 curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
 chmod +x wp-cli.phar
@@ -174,12 +342,12 @@ chown -R www-data:www-data /var/www/public
 # Download and copy mu-plugin
 log_info "Downloading and installing mu-plugin..."
 curl -sLo /tmp/flyinghost.php https://raw.githubusercontent.com/Flying-Host/mu-plugin/main/flyinghost.php
-lxc file push /tmp/flyinghost.php "$LXD_REMOTE:$CONTAINER_NAME/var/www/public/wp-content/mu-plugins/flyinghost.php"
+push_file_to_container /tmp/flyinghost.php /var/www/public/wp-content/mu-plugins/flyinghost.php
 rm -f /tmp/flyinghost.php
 
 # SSH configuration
 log_info "Configuring SSH and wordpress user..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c "
+exec_in_container "
 set -euo pipefail
 sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
 id -u wordpress >/dev/null 2>&1 || useradd -m -s /bin/bash wordpress
@@ -195,7 +363,7 @@ truncate -s 0 /etc/legal
 
 # Log rotation
 log_info "Setting up log rotation..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c "
+exec_in_container "
 set -euo pipefail
 cat > /etc/logrotate.d/flyinghost-logs <<'EOF'
 /var/log/nginx/*.log /var/log/php/*.log {
@@ -213,7 +381,7 @@ EOF
 
 # PHPMyAdmin installation
 log_info "Installing PHPMyAdmin..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c '
+exec_in_container '
 set -euo pipefail
 echo "phpmyadmin phpmyadmin/internal/skip-preseed boolean true" | debconf-set-selections
 echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect" | debconf-set-selections
@@ -221,23 +389,23 @@ echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | debconf-set-select
 apt install -y phpmyadmin
 '
 
-# Copy configuration files
+# Copy configuration files using LXD file API
 log_info "Copying configuration files to container..."
 
 # PHPMyAdmin files
-lxc file push phpmyadmin/signon.php "$LXD_REMOTE:$CONTAINER_NAME/usr/share/phpmyadmin/signon.php"
-lxc file push phpmyadmin/logout.php "$LXD_REMOTE:$CONTAINER_NAME/usr/share/phpmyadmin/logout.php"
-lxc file push phpmyadmin/config.inc.php "$LXD_REMOTE:$CONTAINER_NAME/etc/phpmyadmin/config.inc.php"
+push_file_to_container phpmyadmin/signon.php /usr/share/phpmyadmin/signon.php
+push_file_to_container phpmyadmin/logout.php /usr/share/phpmyadmin/logout.php
+push_file_to_container phpmyadmin/config.inc.php /etc/phpmyadmin/config.inc.php
 
 # Bootstrap script
-lxc file push bootstrap.sh "$LXD_REMOTE:$CONTAINER_NAME/usr/local/sbin/bootstrap.sh"
+push_file_to_container bootstrap.sh /usr/local/sbin/bootstrap.sh
 
 # Nginx config
-lxc file push nginx/wordpress.conf "$LXD_REMOTE:$CONTAINER_NAME/etc/nginx/sites-available/wordpress.conf"
+push_file_to_container nginx/wordpress.conf /etc/nginx/sites-available/wordpress.conf
 
 # Final nginx and cloud-init configuration
 log_info "Finalizing configuration..."
-lxc exec "$LXD_REMOTE:$CONTAINER_NAME" -- bash -c "
+exec_in_container "
 set -euo pipefail
 ln -sf /etc/nginx/sites-available/wordpress.conf /etc/nginx/sites-enabled/
 rm -rf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
@@ -255,23 +423,57 @@ rm -rf /var/lib/cloud/*
 
 # Stop the container
 log_info "Stopping container..."
-lxc stop "$LXD_REMOTE:$CONTAINER_NAME"
+STOP_DATA='{"action":"stop","timeout":30}'
+STOP_RESPONSE=$(lxd_api PUT "/1.0/containers/$CONTAINER_NAME/state" "$STOP_DATA")
+OPERATION=$(echo "$STOP_RESPONSE" | jq -r '.operation // empty')
+
+if [ -n "$OPERATION" ]; then
+    wait_for_operation "$OPERATION"
+fi
 
 # Wait for container to stop
 sleep 5
 
 # Create image from container
 log_info "Creating LXD image '$IMAGE_NAME' from container..."
-lxc publish "$LXD_REMOTE:$CONTAINER_NAME" "$LXD_REMOTE:" \
-    --alias "$IMAGE_NAME" \
-    description="FlyingHost WordPress optimized Ubuntu 24.04 LTS" \
-    os=ubuntu \
-    release=24.04
+
+IMAGE_DATA=$(cat <<EOF
+{
+  "source": {
+    "type": "container",
+    "name": "$CONTAINER_NAME"
+  },
+  "properties": {
+    "description": "$IMAGE_NAME - Built by GitHub Actions",
+    "os": "ubuntu",
+    "release": "24.04"
+  },
+  "public": false,
+  "aliases": [{"name": "$IMAGE_NAME"}]
+}
+EOF
+)
+
+IMAGE_RESPONSE=$(lxd_api POST "/1.0/images" "$IMAGE_DATA")
+OPERATION=$(echo "$IMAGE_RESPONSE" | jq -r '.operation // empty')
+
+if [ -z "$OPERATION" ]; then
+    log_error "Failed to create image"
+    echo "$IMAGE_RESPONSE" | jq . || echo "$IMAGE_RESPONSE"
+    exit 1
+fi
+
+wait_for_operation "$OPERATION"
 
 log_info "Image '$IMAGE_NAME' created successfully"
 
 # List images to verify
 log_info "Verifying image creation..."
-lxc image list "$LXD_REMOTE:" | grep "$IMAGE_NAME" || log_warn "Image not found in list (might still be valid)"
+IMAGES_RESPONSE=$(lxd_api GET "/1.0/images")
+if echo "$IMAGES_RESPONSE" | jq -e ".metadata[] | select(. | contains(\"$IMAGE_NAME\"))" >/dev/null 2>&1; then
+    log_info "Image verified in LXD image list"
+else
+    log_warn "Image not found in list (might still be valid)"
+fi
 
 log_info "✅ Build complete! LXD image '$IMAGE_NAME' is ready to use."
