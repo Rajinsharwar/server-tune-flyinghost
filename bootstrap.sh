@@ -7,7 +7,7 @@ DB_NAME="wordpress"
 DB_USER="wordpress"
 DB_HOST="localhost"
 
-# Generate random DB password (not persisted)
+# Generate random DB password
 DB_PASS="$(openssl rand -base64 32 | tr -d '\n' | tr '+/' '-_')"
 
 # Wait for MariaDB

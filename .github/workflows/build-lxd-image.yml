@@ -5,12 +5,21 @@ on:
     branches:
       - main
       - master
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: "LXD Image name to build"
+        required: true
+        type: string
 
 jobs:
   build-image:
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '--release=')
-    
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '--release=')
+
     permissions:
       contents: read
     
@@ -19,17 +28,24 @@ jobs:
         uses: actions/checkout@v4
         
       - name: Extract image name from commit message
+
+      - name: Extract image name
         id: extract
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
-          # Extract image name from --release=imagename
-          if [[ "$COMMIT_MSG" =~ --release=([a-zA-Z0-9._-]+) ]]; then
-            IMAGE_NAME="${BASH_REMATCH[1]}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            IMAGE_NAME="${{ github.event.inputs.image_name }}"
             echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
-            echo "Found image name: $IMAGE_NAME"
+            echo "Manual run. Image name: $IMAGE_NAME"
           else
-            echo "Error: --release flag found but could not extract image name"
-            exit 1
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            if [[ "$COMMIT_MSG" =~ --release=([a-zA-Z0-9._-]+) ]]; then
+              IMAGE_NAME="${BASH_REMATCH[1]}"
+              echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+              echo "Found image name from commit: $IMAGE_NAME"
+            else
+              echo "Error: Could not extract image name"
+              exit 1
+            fi
           fi
           
       - name: Decode LXD certificate

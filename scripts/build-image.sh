@@ -5,7 +5,7 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -35,7 +35,7 @@ fi
 # LXD API base URL
 LXD_API="https://${LXD_HOST}:8443/1.0"
 
-# Container name (temporary, will be deleted after image creation)
+# Container name
 CONTAINER_NAME="build-${IMAGE_NAME}-$(date +%s)"
 
 log_info "Starting LXD image build process"
@@ -54,8 +54,6 @@ lxd_api_call() {
     -X "$method"
     --cert-type P12
     --cert "${LXD_CERT_FILE}:${LXD_CERT_PASS}"
-    # Skip certificate verification to match Next.js app behavior (rejectUnauthorized: false)
-    # This is acceptable for internal infrastructure where the server cert may be self-signed
     -k
     -H "Content-Type: application/json"
   )
@@ -67,7 +65,7 @@ lxd_api_call() {
   curl "${args[@]}" "$url"
 }
 
-# Function to wait for LXD operation to complete
+# wait for LXD operation to complete
 wait_for_operation() {
   local operation_id="$1"
   local max_wait="${2:-300}"  # Default 5 minutes
@@ -95,7 +93,7 @@ wait_for_operation() {
   return 1
 }
 
-# Function to execute command in container
+# execute command in container
 exec_in_container() {
   local command="$1"
   local wait_for_websocket="${2:-true}"
@@ -149,7 +147,7 @@ exec_in_container() {
   return 0
 }
 
-# Function to copy file to container
+# copy file to container
 copy_to_container() {
   local source="$1"
   local dest="$2"
@@ -173,7 +171,6 @@ copy_to_container() {
     "${LXD_API}/instances/${CONTAINER_NAME}/files?path=${encoded_path}"
 }
 
-# Step 1: Create container from Ubuntu 24.04 image
 log_info "Creating container from Ubuntu 24.04..."
 
 log_info "Selecting cluster member from 'production' group..."
@@ -216,7 +213,6 @@ fi
 
 wait_for_operation "$OPERATION_ID"
 
-# Step 2: Start the container
 log_info "Starting container..."
 
 START_PAYLOAD='{"action": "start", "timeout": 30}'
@@ -228,7 +224,6 @@ wait_for_operation "$OPERATION_ID"
 # Wait for container to be fully ready
 sleep 10
 
-# Step 4: Run setup commands from README
 log_info "Running system setup..."
 
 # System packages and upgrade
@@ -418,7 +413,6 @@ EOCLOUD
 exec_in_container "cloud-init clean --logs"
 exec_in_container "rm -rf /var/lib/cloud/*"
 
-# Step 5: Stop the container
 log_info "Stopping container..."
 
 STOP_PAYLOAD='{"action": "stop", "timeout": 30, "force": false}'
@@ -427,7 +421,6 @@ OPERATION_ID=$(echo "$RESPONSE" | jq -r '.operation' | sed 's|/1.0/operations/||
 
 wait_for_operation "$OPERATION_ID" 60
 
-# Step 6: Delete existing image with the same alias if it exists
 log_info "Checking for existing image with alias: ${IMAGE_NAME}..."
 EXISTING_IMAGE=$(lxd_api_call GET "/images/aliases/${IMAGE_NAME}" 2>/dev/null || echo "")
 
@@ -438,7 +431,6 @@ if echo "$EXISTING_IMAGE" | jq -e '.metadata.target' >/dev/null 2>&1; then
   sleep 2
 fi
 
-# Step 7: Create image from container
 log_info "Creating image from container..."
 
 PUBLISH_PAYLOAD=$(jq -n \
@@ -475,7 +467,6 @@ wait_for_operation "$OPERATION_ID" 300
 
 log_info "Image created successfully with alias: ${IMAGE_NAME}"
 
-# Step 8: Delete temporary container
 log_info "Deleting temporary container..."
 
 RESPONSE=$(lxd_api_call DELETE "/instances/${CONTAINER_NAME}")
