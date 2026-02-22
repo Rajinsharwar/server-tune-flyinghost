@@ -27,7 +27,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         
-      - name: Extract image name from commit message
 
       - name: Extract image name
         id: extract
